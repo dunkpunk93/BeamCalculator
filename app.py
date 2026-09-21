@@ -6,11 +6,18 @@ import streamlit as st
 
 G = 9.81  # m/s^2
 
-MATERIALS = {
+TUBE_MATERIALS = {
     "Steel": {"E_GPa": 200.0, "density": 7850.0},
     "Aluminium": {"E_GPa": 69.0, "density": 2700.0},
     "Titanium (Ti-6Al-4V)": {"E_GPa": 114.0, "density": 4430.0},
     "Carbon Fibre Composite (quasi-isotropic)": {"E_GPa": 70.0, "density": 1600.0},
+    "Custom": None,
+}
+
+WKSF_MATERIALS = {
+    "Particle Board": {"E_GPa": 2.5, "density": 650.0},
+    "MDF": {"E_GPa": 3.0, "density": 750.0},
+    "Multiplex (Birch Plywood)": {"E_GPa": 10.0, "density": 680.0},
     "Custom": None,
 }
 
@@ -30,6 +37,11 @@ SUPPORT_TYPES = {
 LOAD_TYPES = {
     "udl": "Evenly Distributed Load",
     "point": "Point Load",
+}
+
+TUBE_COUNTS = {
+    "one": "1 Tube",
+    "two": "2 Tubes",
 }
 
 st.set_page_config(page_title="Beam Calculator", layout="centered")
@@ -162,7 +174,36 @@ LOAD_FIGS = {
 }
 
 
-def render_choice_row(items, state_key, fig_lookup, label_lookup, cols_ratio=None):
+def fig_one_tube():
+    fig, ax = _new_icon_ax(figsize=(1.9, 1.9))
+    ax.add_patch(plt.Rectangle((-1.1, 0.35), 2.2, 0.22, facecolor="#8a8a8a", edgecolor="black", linewidth=1.5))
+    tube_w, tube_h, wall = 0.55, 0.55, 0.09
+    ax.add_patch(plt.Rectangle((-tube_w / 2, 0.35 - tube_h), tube_w, tube_h, facecolor="#8a8a8a", edgecolor="black", linewidth=1.5))
+    ax.add_patch(plt.Rectangle((-tube_w / 2 + wall, 0.35 - tube_h + wall), tube_w - 2 * wall, tube_h - 2 * wall, facecolor="white", edgecolor="black", linewidth=1.2))
+    ax.set_xlim(-1.3, 1.3)
+    ax.set_ylim(-0.4, 0.75)
+    return fig
+
+
+def fig_two_tube():
+    fig, ax = _new_icon_ax(figsize=(1.9, 1.9))
+    ax.add_patch(plt.Rectangle((-1.1, 0.35), 2.2, 0.22, facecolor="#8a8a8a", edgecolor="black", linewidth=1.5))
+    tube_w, tube_h, wall = 0.45, 0.55, 0.08
+    for cx in (-0.55, 0.55):
+        ax.add_patch(plt.Rectangle((cx - tube_w / 2, 0.35 - tube_h), tube_w, tube_h, facecolor="#8a8a8a", edgecolor="black", linewidth=1.5))
+        ax.add_patch(plt.Rectangle((cx - tube_w / 2 + wall, 0.35 - tube_h + wall), tube_w - 2 * wall, tube_h - 2 * wall, facecolor="white", edgecolor="black", linewidth=1.2))
+    ax.set_xlim(-1.3, 1.3)
+    ax.set_ylim(-0.4, 0.75)
+    return fig
+
+
+TUBE_COUNT_FIGS = {
+    "one": fig_one_tube,
+    "two": fig_two_tube,
+}
+
+
+def render_choice_row(items, state_key, fig_lookup, label_lookup):
     """Render a row of icon + button choices, storing selection in st.session_state[state_key]."""
     cols = st.columns(len(items))
     for col, key in zip(cols, items):
@@ -182,6 +223,26 @@ def render_choice_row(items, state_key, fig_lookup, label_lookup, cols_ratio=Non
                     st.rerun()
             if is_selected:
                 st.caption("✓ Selected")
+
+
+def material_selector(materials_dict, key_prefix, default_custom_e_gpa=200.0, default_custom_density=7850.0):
+    """Renders a material dropdown (+ custom E/density inputs). Returns (E_GPa, density)."""
+    material_name = st.selectbox("Material", list(materials_dict.keys()), key=f"{key_prefix}_material_name")
+    if material_name == "Custom":
+        c1, c2 = st.columns(2)
+        e_gpa = c1.number_input(
+            "Elastic modulus E (GPa)", min_value=0.001, value=default_custom_e_gpa, step=1.0, key=f"{key_prefix}_custom_e"
+        )
+        density = c2.number_input(
+            "Density (kg/m³)", min_value=0.001, value=default_custom_density, step=10.0, key=f"{key_prefix}_custom_density"
+        )
+    else:
+        preset = materials_dict[material_name]
+        e_gpa, density = preset["E_GPa"], preset["density"]
+        c1, c2 = st.columns(2)
+        c1.info(f"E = {e_gpa} GPa")
+        c2.info(f"Density = {density} kg/m³")
+    return e_gpa, density
 
 
 # ---------------------------------------------------------------------------
@@ -217,15 +278,15 @@ def section_properties(beam_type, dims_m):
 
 
 # ---------------------------------------------------------------------------
-# Beam deflection / moment formulas (x, L in metres; w in N/m; P in N)
+# Beam deflection / moment formulas (x, L in metres; w in N/m; P in N; EI in N.m^2)
 # ---------------------------------------------------------------------------
-def udl_deflection(support, w, x, L, E, I):
+def udl_deflection(support, w, x, L, EI):
     if support == "simply_supported":
-        return (w * x / (24 * E * I)) * (L ** 3 - 2 * L * x ** 2 + x ** 3)
+        return (w * x / (24 * EI)) * (L ** 3 - 2 * L * x ** 2 + x ** 3)
     if support == "cantilever":
-        return (w * x ** 2 * (6 * L ** 2 - 4 * L * x + x ** 2)) / (24 * E * I)
+        return (w * x ** 2 * (6 * L ** 2 - 4 * L * x + x ** 2)) / (24 * EI)
     if support == "fixed_fixed":
-        return (w * x ** 2 * (L - x) ** 2) / (24 * E * I)
+        return (w * x ** 2 * (L - x) ** 2) / (24 * EI)
     raise ValueError(support)
 
 
@@ -239,25 +300,25 @@ def udl_moment(support, w, x, L):
     raise ValueError(support)
 
 
-def point_deflection(support, P, a, x, L, E, I):
+def point_deflection(support, P, a, x, L, EI):
     b = L - a
     if support == "simply_supported":
         return np.where(
             x <= a,
-            (P * b * x) / (6 * L * E * I) * (L ** 2 - b ** 2 - x ** 2),
-            (P * a * (L - x)) / (6 * L * E * I) * (2 * L * x - a ** 2 - x ** 2),
+            (P * b * x) / (6 * L * EI) * (L ** 2 - b ** 2 - x ** 2),
+            (P * a * (L - x)) / (6 * L * EI) * (2 * L * x - a ** 2 - x ** 2),
         )
     if support == "cantilever":
         return np.where(
             x <= a,
-            P * x ** 2 * (3 * a - x) / (6 * E * I),
-            P * a ** 2 * (3 * x - a) / (6 * E * I),
+            P * x ** 2 * (3 * a - x) / (6 * EI),
+            P * a ** 2 * (3 * x - a) / (6 * EI),
         )
     if support == "fixed_fixed":
         return np.where(
             x <= a,
-            (P * b ** 2 * x ** 2) / (6 * E * I * L ** 3) * (3 * a * L - 3 * a * x - b * x),
-            (P * a ** 2 * (L - x) ** 2) / (6 * E * I * L ** 3) * (3 * b * L - 3 * b * (L - x) - a * (L - x)),
+            (P * b ** 2 * x ** 2) / (6 * EI * L ** 3) * (3 * a * L - 3 * a * x - b * x),
+            (P * a ** 2 * (L - x) ** 2) / (6 * EI * L ** 3) * (3 * b * L - 3 * b * (L - x) - a * (L - x)),
         )
     raise ValueError(support)
 
@@ -275,116 +336,141 @@ def point_moment(support, P, a, x, L):
     raise ValueError(support)
 
 
-# ---------------------------------------------------------------------------
-# App state defaults
-# ---------------------------------------------------------------------------
-st.session_state.setdefault("beam_type", "hollow_rect")
-st.session_state.setdefault("support_type", "simply_supported")
-st.session_state.setdefault("load_type", "udl")
+def clamp_point_load_distance(a_m, length_m):
+    """If the load sits exactly at (or past) the right support, nudge it 1mm inboard for calc purposes."""
+    if a_m >= length_m:
+        return max(length_m - 0.001, 1e-6)
+    return a_m
 
-st.title("Beam Calculator")
-st.caption("Maximum deflection and stress for a simple beam, including the beam's own weight.")
 
-# --- Step 1: cross-section type -------------------------------------------------
-st.header("1. Beam cross-section")
-render_choice_row(list(BEAM_TYPES.keys()), "beam_type", CROSS_SECTION_FIGS, BEAM_TYPES)
-beam_type = st.session_state["beam_type"]
+def render_load_type_and_get_x_grid(state_prefix, length_m):
+    """Renders load-type selector + inputs. Returns (load_type, total_udl_n, point_load_n, point_a_m, calc_point_a_m)."""
+    render_choice_row(list(LOAD_TYPES.keys()), f"{state_prefix}_load_type", LOAD_FIGS, LOAD_TYPES)
+    load_type = st.session_state[f"{state_prefix}_load_type"]
 
-st.subheader("Dimensions (mm)")
-dims_mm = {}
-if beam_type == "hollow_rect":
-    c1, c2, c3 = st.columns(3)
-    dims_mm["h"] = c1.number_input("Height", min_value=0.1, value=50.0, step=1.0)
-    dims_mm["w"] = c2.number_input("Width", min_value=0.1, value=30.0, step=1.0)
-    dims_mm["t"] = c3.number_input("Wall thickness", min_value=0.01, value=3.0, step=0.5)
-elif beam_type == "hollow_round":
-    c1, c2 = st.columns(2)
-    dims_mm["OD"] = c1.number_input("Outer diameter (OD)", min_value=0.1, value=50.0, step=1.0)
-    dims_mm["t"] = c2.number_input("Wall thickness", min_value=0.01, value=3.0, step=0.5)
-elif beam_type == "solid_round":
-    dims_mm["OD"] = st.number_input("Outer diameter (OD)", min_value=0.1, value=30.0, step=1.0)
-elif beam_type == "solid_rect":
-    c1, c2 = st.columns(2)
-    dims_mm["h"] = c1.number_input("Height", min_value=0.1, value=50.0, step=1.0)
-    dims_mm["w"] = c2.number_input("Width", min_value=0.1, value=30.0, step=1.0)
+    magnitude_key = f"{state_prefix}_load_magnitude_n"
+    dist_key = f"{state_prefix}_point_a_m"
 
-dims_error = None
-if beam_type in ("hollow_rect",) and dims_mm["t"] * 2 >= min(dims_mm["h"], dims_mm["w"]):
-    dims_error = "Wall thickness is too large for the given height/width."
-elif beam_type in ("hollow_round",) and dims_mm["t"] * 2 >= dims_mm["OD"]:
-    dims_error = "Wall thickness is too large for the given outer diameter."
+    if load_type == "udl":
+        total_udl_n = st.number_input(
+            "Total distributed load (N)", min_value=0.0, value=500.0, step=10.0, key=magnitude_key
+        )
+        point_load_n = None
+        point_a_m = None
+        calc_point_a_m = None
+    else:
+        # Clamp any previously-stored distance if the beam length has since shrunk.
+        if dist_key in st.session_state and st.session_state[dist_key] > length_m:
+            st.session_state[dist_key] = length_m
+        c1, c2 = st.columns(2)
+        point_load_n = c1.number_input(
+            "Point load (N)", min_value=0.0, value=500.0, step=10.0, key=magnitude_key
+        )
+        point_a_m = c2.number_input(
+            "Distance from left support (m)",
+            min_value=0.0,
+            max_value=length_m,
+            value=min(length_m / 2, length_m),
+            step=0.05,
+            key=dist_key,
+        )
+        total_udl_n = None
+        calc_point_a_m = clamp_point_load_distance(point_a_m, length_m)
 
-if dims_error:
-    st.error(dims_error)
+    return load_type, total_udl_n, point_load_n, point_a_m, calc_point_a_m
 
-# --- Step 2: support type --------------------------------------------------------
-st.header("2. Support type")
-render_choice_row(list(SUPPORT_TYPES.keys()), "support_type", SUPPORT_FIGS, SUPPORT_TYPES)
-support_type = st.session_state["support_type"]
 
-length_m = st.number_input("Beam length (m)", min_value=0.01, value=1.0, step=0.1)
+def deflection_plot(x, y):
+    fig, ax = plt.subplots(figsize=(6, 2.5))
+    ax.plot(x, -y * 1000, color="#1f77b4")
+    ax.axhline(0, color="black", linewidth=0.8)
+    ax.set_xlabel("Position along beam (m)")
+    ax.set_ylabel("Deflection (mm)")
+    ax.set_title("Deflected shape")
+    ax.grid(True, alpha=0.3)
+    st.pyplot(fig)
+    plt.close(fig)
 
-# --- Step 3: load type -----------------------------------------------------------
-st.header("3. Load type")
-render_choice_row(list(LOAD_TYPES.keys()), "load_type", LOAD_FIGS, LOAD_TYPES)
-load_type = st.session_state["load_type"]
-
-load_error = None
-if load_type == "udl":
-    total_applied_load_n = st.number_input("Total distributed load (N)", min_value=0.0, value=500.0, step=10.0)
-    point_load_n = None
-    point_a_m = None
-else:
-    c1, c2 = st.columns(2)
-    point_load_n = c1.number_input("Point load (N)", min_value=0.0, value=500.0, step=10.0)
-    point_a_m = c2.number_input("Distance from left support (m)", min_value=0.0, value=length_m / 2, step=0.05)
-    total_applied_load_n = None
-    if point_a_m >= length_m or point_a_m < 0:
-        load_error = "Load distance must be between 0 and the beam length."
-
-if load_error:
-    st.error(load_error)
-
-# --- Step 4: material --------------------------------------------------------------
-st.header("4. Material")
-material_name = st.selectbox("Material", list(MATERIALS.keys()))
-if material_name == "Custom":
-    c1, c2 = st.columns(2)
-    E_GPa = c1.number_input("Elastic modulus E (GPa)", min_value=0.001, value=200.0, step=1.0)
-    density = c2.number_input("Density (kg/m³)", min_value=0.001, value=7850.0, step=10.0)
-else:
-    preset = MATERIALS[material_name]
-    E_GPa, density = preset["E_GPa"], preset["density"]
-    c1, c2 = st.columns(2)
-    c1.info(f"E = {E_GPa} GPa")
-    c2.info(f"Density = {density} kg/m³")
 
 # ---------------------------------------------------------------------------
-# Calculation
+# Tab 1: Simple Tube Bending
 # ---------------------------------------------------------------------------
-st.header("Results")
+def render_simple_tube_tab():
+    st.session_state.setdefault("t1_beam_type", "hollow_rect")
+    st.session_state.setdefault("t1_support_type", "simply_supported")
+    st.session_state.setdefault("t1_load_type", "udl")
 
-if dims_error or load_error:
-    st.warning("Fix the input errors above to see results.")
-else:
+    st.caption("Maximum deflection and stress for a simple beam, including the beam's own weight.")
+
+    st.header("1. Beam cross-section")
+    render_choice_row(list(BEAM_TYPES.keys()), "t1_beam_type", CROSS_SECTION_FIGS, BEAM_TYPES)
+    beam_type = st.session_state["t1_beam_type"]
+
+    st.subheader("Dimensions (mm)")
+    dims_mm = {}
+    if beam_type == "hollow_rect":
+        c1, c2, c3 = st.columns(3)
+        dims_mm["h"] = c1.number_input("Height", min_value=0.1, value=50.0, step=1.0, key="t1_h")
+        dims_mm["w"] = c2.number_input("Width", min_value=0.1, value=30.0, step=1.0, key="t1_w")
+        dims_mm["t"] = c3.number_input("Wall thickness", min_value=0.01, value=3.0, step=0.5, key="t1_t")
+    elif beam_type == "hollow_round":
+        c1, c2 = st.columns(2)
+        dims_mm["OD"] = c1.number_input("Outer diameter (OD)", min_value=0.1, value=50.0, step=1.0, key="t1_od")
+        dims_mm["t"] = c2.number_input("Wall thickness", min_value=0.01, value=3.0, step=0.5, key="t1_t2")
+    elif beam_type == "solid_round":
+        dims_mm["OD"] = st.number_input("Outer diameter (OD)", min_value=0.1, value=30.0, step=1.0, key="t1_od2")
+    elif beam_type == "solid_rect":
+        c1, c2 = st.columns(2)
+        dims_mm["h"] = c1.number_input("Height", min_value=0.1, value=50.0, step=1.0, key="t1_h2")
+        dims_mm["w"] = c2.number_input("Width", min_value=0.1, value=30.0, step=1.0, key="t1_w2")
+
+    dims_error = None
+    if beam_type == "hollow_rect" and dims_mm["t"] * 2 >= min(dims_mm["h"], dims_mm["w"]):
+        dims_error = "Wall thickness is too large for the given height/width."
+    elif beam_type == "hollow_round" and dims_mm["t"] * 2 >= dims_mm["OD"]:
+        dims_error = "Wall thickness is too large for the given outer diameter."
+
+    if dims_error:
+        st.error(dims_error)
+
+    st.header("2. Support type")
+    render_choice_row(list(SUPPORT_TYPES.keys()), "t1_support_type", SUPPORT_FIGS, SUPPORT_TYPES)
+    support_type = st.session_state["t1_support_type"]
+
+    length_m = st.number_input("Beam length (m)", min_value=0.01, value=1.0, step=0.1, key="t1_length")
+
+    st.header("3. Load type")
+    load_type, total_udl_n, point_load_n, point_a_m, calc_point_a_m = render_load_type_and_get_x_grid(
+        "t1", length_m
+    )
+
+    st.header("4. Material")
+    e_gpa, density = material_selector(TUBE_MATERIALS, "t1")
+
+    st.header("Results")
+    if dims_error:
+        st.warning("Fix the input errors above to see results.")
+        return
+
     dims_m = {k: v / 1000.0 for k, v in dims_mm.items()}
     area_m2, I_m4, c_m = section_properties(beam_type, dims_m)
 
-    E_pa = E_GPa * 1e9
+    E_pa = e_gpa * 1e9
+    EI = E_pa * I_m4
     mass_kg = density * area_m2 * length_m
     w_self = density * area_m2 * G  # N/m
 
     x = np.linspace(0, length_m, 2001)
 
     if load_type == "udl":
-        w_total = w_self + (total_applied_load_n / length_m)
-        y = udl_deflection(support_type, w_total, x, length_m, E_pa, I_m4)
+        w_total = w_self + (total_udl_n / length_m)
+        y = udl_deflection(support_type, w_total, x, length_m, EI)
         m = udl_moment(support_type, w_total, x, length_m)
     else:
-        y = udl_deflection(support_type, w_self, x, length_m, E_pa, I_m4)
+        y = udl_deflection(support_type, w_self, x, length_m, EI)
         m = udl_moment(support_type, w_self, x, length_m)
-        y = y + point_deflection(support_type, point_load_n, point_a_m, x, length_m, E_pa, I_m4)
-        m = m + point_moment(support_type, point_load_n, point_a_m, x, length_m)
+        y = y + point_deflection(support_type, point_load_n, calc_point_a_m, x, length_m, EI)
+        m = m + point_moment(support_type, point_load_n, calc_point_a_m, x, length_m)
 
     max_deflection_m = float(np.max(np.abs(y)))
     max_moment_nm = float(np.max(np.abs(m)))
@@ -401,12 +487,168 @@ else:
         st.write(f"Distance to extreme fibre (c): {c_m * 1000:.2f} mm")
         st.write(f"Self-weight distributed load: {w_self:.3f} N/m")
 
-    fig, ax = plt.subplots(figsize=(6, 2.5))
-    ax.plot(x, -y * 1000, color="#1f77b4")
-    ax.axhline(0, color="black", linewidth=0.8)
-    ax.set_xlabel("Position along beam (m)")
-    ax.set_ylabel("Deflection (mm)")
-    ax.set_title("Deflected shape")
-    ax.grid(True, alpha=0.3)
-    st.pyplot(fig)
-    plt.close(fig)
+    deflection_plot(x, y)
+
+
+# ---------------------------------------------------------------------------
+# Tab 2: Composite WKSF & Tube Bending
+# ---------------------------------------------------------------------------
+def compute_composite_properties(wksf_thickness_m, ws_width_m, tube_dims_m, n_tubes, E_wksf_pa, E_tube_pa):
+    """Transformed-section composite beam properties (reference material = WKSF), vertical stacking only."""
+    A_wksf, I_wksf_own, _ = section_properties("solid_rect", {"h": wksf_thickness_m, "w": ws_width_m})
+    A_tube_single, I_tube_single_own, _ = section_properties("hollow_rect", tube_dims_m)
+    tube_height_m = tube_dims_m["h"]
+
+    A_tube_total = n_tubes * A_tube_single
+    I_tube_own_total = n_tubes * I_tube_single_own
+
+    y_wksf = wksf_thickness_m / 2
+    y_tube = wksf_thickness_m + tube_height_m / 2
+
+    n_ratio = E_tube_pa / E_wksf_pa
+    A_tube_transformed = n_ratio * A_tube_total
+
+    y_na = (A_wksf * y_wksf + A_tube_transformed * y_tube) / (A_wksf + A_tube_transformed)
+
+    I_transformed = (I_wksf_own + A_wksf * (y_wksf - y_na) ** 2) + n_ratio * (
+        I_tube_own_total + A_tube_total * (y_tube - y_na) ** 2
+    )
+
+    EI_total = E_wksf_pa * I_transformed
+
+    return {
+        "A_wksf": A_wksf,
+        "A_tube_total": A_tube_total,
+        "y_wksf": y_wksf,
+        "y_tube": y_tube,
+        "y_na": y_na,
+        "n_ratio": n_ratio,
+        "I_transformed": I_transformed,
+        "EI_total": EI_total,
+        "tube_height_m": tube_height_m,
+    }
+
+
+def render_composite_tab():
+    st.session_state.setdefault("t2_tube_count", "one")
+    st.session_state.setdefault("t2_support_type", "simply_supported")
+    st.session_state.setdefault("t2_load_type", "udl")
+
+    st.caption(
+        "Composite worksurface (WKSF) + tube frame beam: transformed-section method, "
+        "vertical stacking only (no horizontal offset or twist)."
+    )
+
+    st.header("1. Tube count")
+    render_choice_row(list(TUBE_COUNTS.keys()), "t2_tube_count", TUBE_COUNT_FIGS, TUBE_COUNTS)
+    tube_count_key = st.session_state["t2_tube_count"]
+    n_tubes = 1 if tube_count_key == "one" else 2
+
+    st.header("2. Dimensions (mm)")
+    c1, c2 = st.columns(2)
+    wksf_thickness_mm = c1.number_input("WKSF thickness", min_value=0.1, value=18.0, step=1.0, key="t2_wksf_t")
+    ws_width_mm = c2.number_input("Worksurface width", min_value=1.0, value=700.0, step=10.0, key="t2_ws_width")
+
+    st.caption("Tube dimensions (each tube, hollow rectangular section)")
+    c1, c2, c3 = st.columns(3)
+    tube_w_mm = c1.number_input("Tube width", min_value=0.1, value=40.0, step=1.0, key="t2_tube_w")
+    tube_h_mm = c2.number_input("Tube height", min_value=0.1, value=40.0, step=1.0, key="t2_tube_h")
+    tube_t_mm = c3.number_input("Tube wall thickness", min_value=0.01, value=2.0, step=0.5, key="t2_tube_t")
+
+    dims_error = None
+    if tube_t_mm * 2 >= min(tube_w_mm, tube_h_mm):
+        dims_error = "Tube wall thickness is too large for the given tube width/height."
+    if dims_error:
+        st.error(dims_error)
+
+    st.header("3. Support type")
+    render_choice_row(list(SUPPORT_TYPES.keys()), "t2_support_type", SUPPORT_FIGS, SUPPORT_TYPES)
+    support_type = st.session_state["t2_support_type"]
+
+    length_m = st.number_input("WKSF length (m)", min_value=0.01, value=1.2, step=0.1, key="t2_length")
+
+    st.header("4. Load type")
+    load_type, total_udl_n, point_load_n, point_a_m, calc_point_a_m = render_load_type_and_get_x_grid(
+        "t2", length_m
+    )
+
+    st.header("5. Material")
+    st.subheader("Worksurface (WKSF)")
+    e_wksf_gpa, density_wksf = material_selector(WKSF_MATERIALS, "t2_wksf", default_custom_e_gpa=3.0, default_custom_density=700.0)
+    st.subheader("Tube")
+    e_tube_gpa, density_tube = material_selector(TUBE_MATERIALS, "t2_tube")
+
+    st.header("Results")
+    if dims_error:
+        st.warning("Fix the input errors above to see results.")
+        return
+
+    wksf_thickness_m = wksf_thickness_mm / 1000.0
+    ws_width_m = ws_width_mm / 1000.0
+    tube_dims_m = {"h": tube_h_mm / 1000.0, "w": tube_w_mm / 1000.0, "t": tube_t_mm / 1000.0}
+
+    E_wksf_pa = e_wksf_gpa * 1e9
+    E_tube_pa = e_tube_gpa * 1e9
+
+    props = compute_composite_properties(wksf_thickness_m, ws_width_m, tube_dims_m, n_tubes, E_wksf_pa, E_tube_pa)
+    EI_total = props["EI_total"]
+    y_na = props["y_na"]
+
+    mass_kg = (density_wksf * props["A_wksf"] + density_tube * props["A_tube_total"]) * length_m
+    w_self = (density_wksf * props["A_wksf"] + density_tube * props["A_tube_total"]) * G  # N/m
+
+    x = np.linspace(0, length_m, 2001)
+
+    if load_type == "udl":
+        w_total = w_self + (total_udl_n / length_m)
+        y = udl_deflection(support_type, w_total, x, length_m, EI_total)
+        m = udl_moment(support_type, w_total, x, length_m)
+    else:
+        y = udl_deflection(support_type, w_self, x, length_m, EI_total)
+        m = udl_moment(support_type, w_self, x, length_m)
+        y = y + point_deflection(support_type, point_load_n, calc_point_a_m, x, length_m, EI_total)
+        m = m + point_moment(support_type, point_load_n, calc_point_a_m, x, length_m)
+
+    max_deflection_m = float(np.max(np.abs(y)))
+    max_moment_nm = float(np.max(np.abs(m)))
+
+    y_top_wksf = 0.0
+    y_interface = wksf_thickness_m
+    y_bottom_tube = wksf_thickness_m + props["tube_height_m"]
+
+    c_wksf = max(abs(y_top_wksf - y_na), abs(y_interface - y_na))
+    c_tube = max(abs(y_interface - y_na), abs(y_bottom_tube - y_na))
+
+    max_stress_wksf_pa = max_moment_nm * c_wksf * E_wksf_pa / EI_total
+    max_stress_tube_pa = max_moment_nm * c_tube * E_tube_pa / EI_total
+
+    c1, c2 = st.columns(2)
+    c1.metric("Max deflection", f"{max_deflection_m * 1000:.3f} mm")
+    c2.metric("Total mass", f"{mass_kg:.3f} kg")
+
+    c1, c2 = st.columns(2)
+    c1.metric("Max WKSF stress", f"{max_stress_wksf_pa / 1e6:.2f} MPa")
+    c2.metric("Max tube stress", f"{max_stress_tube_pa / 1e6:.2f} MPa")
+
+    with st.expander("Composite section properties"):
+        st.write(f"WKSF area: {props['A_wksf'] * 1e6:.1f} mm²")
+        st.write(f"Total tube area ({n_tubes} tube{'s' if n_tubes > 1 else ''}): {props['A_tube_total'] * 1e6:.1f} mm²")
+        st.write(f"Modular ratio (n = E_tube / E_wksf): {props['n_ratio']:.3f}")
+        st.write(f"Neutral axis depth from top of WKSF: {y_na * 1000:.2f} mm")
+        st.write(f"Transformed second moment of area (I, in WKSF-equivalent units): {props['I_transformed'] * 1e12:.1f} mm⁴")
+        st.write(f"Effective bending stiffness (EI): {EI_total:.1f} N·m²")
+        st.write(f"Self-weight distributed load: {w_self:.3f} N/m")
+
+    deflection_plot(x, y)
+
+
+# ---------------------------------------------------------------------------
+# App entry point
+# ---------------------------------------------------------------------------
+st.title("Beam Calculator")
+
+tab1, tab2 = st.tabs(["Simple Tube Bending", "Composite WKSF & Tube Bending"])
+with tab1:
+    render_simple_tube_tab()
+with tab2:
+    render_composite_tab()
