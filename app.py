@@ -44,6 +44,11 @@ TUBE_COUNTS = {
     "two": "2 Tubes",
 }
 
+BOND_TYPES = {
+    "bonded": "Fully Bonded",
+    "unbonded": "Unbonded (Resting Only)",
+}
+
 st.set_page_config(page_title="Beam Calculator", layout="centered")
 
 
@@ -200,6 +205,37 @@ def fig_two_tube():
 TUBE_COUNT_FIGS = {
     "one": fig_one_tube,
     "two": fig_two_tube,
+}
+
+
+def fig_bonded():
+    fig, ax = _new_icon_ax(figsize=(1.9, 1.9))
+    ax.add_patch(plt.Rectangle((-1.0, 0.35), 2.0, 0.22, facecolor="#8a8a8a", edgecolor="black", linewidth=1.5))
+    tube_w, tube_h = 0.6, 0.5
+    ax.add_patch(plt.Rectangle((-tube_w / 2, 0.35 - tube_h), tube_w, tube_h, facecolor="#8a8a8a", edgecolor="black", linewidth=1.5))
+    for cx in np.linspace(-tube_w / 2 + 0.08, tube_w / 2 - 0.08, 5):
+        ax.plot([cx, cx + 0.08], [0.35, 0.35 - 0.08], color="black", linewidth=1.3)
+    ax.set_xlim(-1.2, 1.2)
+    ax.set_ylim(-0.3, 0.7)
+    return fig
+
+
+def fig_unbonded():
+    fig, ax = _new_icon_ax(figsize=(1.9, 1.9))
+    gap = 0.05
+    ax.add_patch(plt.Rectangle((-1.0, 0.35 + gap), 2.0, 0.22, facecolor="#8a8a8a", edgecolor="black", linewidth=1.5))
+    tube_w, tube_h = 0.6, 0.5
+    ax.add_patch(plt.Rectangle((-tube_w / 2, 0.35 - tube_h), tube_w, tube_h, facecolor="#8a8a8a", edgecolor="black", linewidth=1.5))
+    ax.plot([-0.9, 0.9], [0.35 + gap / 2, 0.35 + gap / 2], color="black", linestyle="--", linewidth=1)
+    ax.annotate("", xy=(-0.35, 0.15), xytext=(0.35, 0.15), arrowprops=dict(arrowstyle="<->", linewidth=1.2))
+    ax.set_xlim(-1.2, 1.2)
+    ax.set_ylim(-0.3, 0.75)
+    return fig
+
+
+BOND_FIGS = {
+    "bonded": fig_bonded,
+    "unbonded": fig_unbonded,
 }
 
 
@@ -493,8 +529,16 @@ def render_simple_tube_tab():
 # ---------------------------------------------------------------------------
 # Tab 2: Composite WKSF & Tube Bending
 # ---------------------------------------------------------------------------
-def compute_composite_properties(wksf_thickness_m, ws_width_m, tube_dims_m, n_tubes, E_wksf_pa, E_tube_pa):
-    """Transformed-section composite beam properties (reference material = WKSF), vertical stacking only."""
+def compute_composite_properties(wksf_thickness_m, ws_width_m, tube_dims_m, n_tubes, E_wksf_pa, E_tube_pa, bonded):
+    """Composite beam properties, vertical stacking only (no horizontal offset or twist).
+
+    bonded=True: transformed-section method (reference material = WKSF) - full shear
+    connection, single shared neutral axis, plane sections remain plane across the depth.
+
+    bonded=False: WKSF and tube(s) are only resting in contact (no shear transfer). Both
+    layers share the same curvature (they deflect together) but each bends about its own
+    centroid; total moment splits between them in proportion to each layer's own EI.
+    """
     A_wksf, I_wksf_own, _ = section_properties("solid_rect", {"h": wksf_thickness_m, "w": ws_width_m})
     A_tube_single, I_tube_single_own, _ = section_properties("hollow_rect", tube_dims_m)
     tube_height_m = tube_dims_m["h"]
@@ -505,38 +549,51 @@ def compute_composite_properties(wksf_thickness_m, ws_width_m, tube_dims_m, n_tu
     y_wksf = wksf_thickness_m / 2
     y_tube = wksf_thickness_m + tube_height_m / 2
 
-    n_ratio = E_tube_pa / E_wksf_pa
-    A_tube_transformed = n_ratio * A_tube_total
+    if bonded:
+        n_ratio = E_tube_pa / E_wksf_pa
+        A_tube_transformed = n_ratio * A_tube_total
 
-    y_na = (A_wksf * y_wksf + A_tube_transformed * y_tube) / (A_wksf + A_tube_transformed)
+        y_na = (A_wksf * y_wksf + A_tube_transformed * y_tube) / (A_wksf + A_tube_transformed)
 
-    I_transformed = (I_wksf_own + A_wksf * (y_wksf - y_na) ** 2) + n_ratio * (
-        I_tube_own_total + A_tube_total * (y_tube - y_na) ** 2
-    )
+        I_transformed = (I_wksf_own + A_wksf * (y_wksf - y_na) ** 2) + n_ratio * (
+            I_tube_own_total + A_tube_total * (y_tube - y_na) ** 2
+        )
 
-    EI_total = E_wksf_pa * I_transformed
+        EI_total = E_wksf_pa * I_transformed
+        y_ref_wksf = y_na
+        y_ref_tube = y_na
+    else:
+        n_ratio = None
+        I_transformed = None
+        EI_total = E_wksf_pa * I_wksf_own + E_tube_pa * I_tube_own_total
+        # Each layer bends about its own centroid - no shared neutral axis.
+        y_ref_wksf = y_wksf
+        y_ref_tube = y_tube
 
     return {
         "A_wksf": A_wksf,
         "A_tube_total": A_tube_total,
         "y_wksf": y_wksf,
         "y_tube": y_tube,
-        "y_na": y_na,
+        "y_ref_wksf": y_ref_wksf,
+        "y_ref_tube": y_ref_tube,
         "n_ratio": n_ratio,
         "I_transformed": I_transformed,
         "EI_total": EI_total,
         "tube_height_m": tube_height_m,
+        "bonded": bonded,
     }
 
 
 def render_composite_tab():
     st.session_state.setdefault("t2_tube_count", "one")
+    st.session_state.setdefault("t2_bonding_type", "bonded")
     st.session_state.setdefault("t2_support_type", "simply_supported")
     st.session_state.setdefault("t2_load_type", "udl")
 
     st.caption(
-        "Composite worksurface (WKSF) + tube frame beam: transformed-section method, "
-        "vertical stacking only (no horizontal offset or twist)."
+        "Composite worksurface (WKSF) + tube frame beam, vertical stacking only "
+        "(no horizontal offset or twist)."
     )
 
     st.header("1. Tube count")
@@ -544,7 +601,18 @@ def render_composite_tab():
     tube_count_key = st.session_state["t2_tube_count"]
     n_tubes = 1 if tube_count_key == "one" else 2
 
-    st.header("2. Dimensions (mm)")
+    st.header("2. Bonding type")
+    render_choice_row(list(BOND_TYPES.keys()), "t2_bonding_type", BOND_FIGS, BOND_TYPES)
+    bonded = st.session_state["t2_bonding_type"] == "bonded"
+    if bonded:
+        st.caption("Full shear connection assumed (e.g. glued/screwed) - the two layers act as one composite section.")
+    else:
+        st.caption(
+            "No shear connection assumed - the WKSF rests on the tube(s) and each bends about its own "
+            "centroid. This gives a lower, more conservative stiffness estimate than full bonding."
+        )
+
+    st.header("3. Dimensions (mm)")
     c1, c2 = st.columns(2)
     wksf_thickness_mm = c1.number_input("WKSF thickness", min_value=0.1, value=18.0, step=1.0, key="t2_wksf_t")
     ws_width_mm = c2.number_input("Worksurface width", min_value=1.0, value=700.0, step=10.0, key="t2_ws_width")
@@ -561,18 +629,18 @@ def render_composite_tab():
     if dims_error:
         st.error(dims_error)
 
-    st.header("3. Support type")
+    st.header("4. Support type")
     render_choice_row(list(SUPPORT_TYPES.keys()), "t2_support_type", SUPPORT_FIGS, SUPPORT_TYPES)
     support_type = st.session_state["t2_support_type"]
 
     length_m = st.number_input("WKSF length (m)", min_value=0.01, value=1.2, step=0.1, key="t2_length")
 
-    st.header("4. Load type")
+    st.header("5. Load type")
     load_type, total_udl_n, point_load_n, point_a_m, calc_point_a_m = render_load_type_and_get_x_grid(
         "t2", length_m
     )
 
-    st.header("5. Material")
+    st.header("6. Material")
     st.subheader("Worksurface (WKSF)")
     e_wksf_gpa, density_wksf = material_selector(WKSF_MATERIALS, "t2_wksf", default_custom_e_gpa=3.0, default_custom_density=700.0)
     st.subheader("Tube")
@@ -590,9 +658,10 @@ def render_composite_tab():
     E_wksf_pa = e_wksf_gpa * 1e9
     E_tube_pa = e_tube_gpa * 1e9
 
-    props = compute_composite_properties(wksf_thickness_m, ws_width_m, tube_dims_m, n_tubes, E_wksf_pa, E_tube_pa)
+    props = compute_composite_properties(
+        wksf_thickness_m, ws_width_m, tube_dims_m, n_tubes, E_wksf_pa, E_tube_pa, bonded
+    )
     EI_total = props["EI_total"]
-    y_na = props["y_na"]
 
     mass_kg = (density_wksf * props["A_wksf"] + density_tube * props["A_tube_total"]) * length_m
     w_self = (density_wksf * props["A_wksf"] + density_tube * props["A_tube_total"]) * G  # N/m
@@ -616,8 +685,8 @@ def render_composite_tab():
     y_interface = wksf_thickness_m
     y_bottom_tube = wksf_thickness_m + props["tube_height_m"]
 
-    c_wksf = max(abs(y_top_wksf - y_na), abs(y_interface - y_na))
-    c_tube = max(abs(y_interface - y_na), abs(y_bottom_tube - y_na))
+    c_wksf = max(abs(y_top_wksf - props["y_ref_wksf"]), abs(y_interface - props["y_ref_wksf"]))
+    c_tube = max(abs(y_interface - props["y_ref_tube"]), abs(y_bottom_tube - props["y_ref_tube"]))
 
     max_stress_wksf_pa = max_moment_nm * c_wksf * E_wksf_pa / EI_total
     max_stress_tube_pa = max_moment_nm * c_tube * E_tube_pa / EI_total
@@ -633,9 +702,15 @@ def render_composite_tab():
     with st.expander("Composite section properties"):
         st.write(f"WKSF area: {props['A_wksf'] * 1e6:.1f} mm²")
         st.write(f"Total tube area ({n_tubes} tube{'s' if n_tubes > 1 else ''}): {props['A_tube_total'] * 1e6:.1f} mm²")
-        st.write(f"Modular ratio (n = E_tube / E_wksf): {props['n_ratio']:.3f}")
-        st.write(f"Neutral axis depth from top of WKSF: {y_na * 1000:.2f} mm")
-        st.write(f"Transformed second moment of area (I, in WKSF-equivalent units): {props['I_transformed'] * 1e12:.1f} mm⁴")
+        if bonded:
+            st.write("Bonding: fully bonded (transformed-section method, shared neutral axis)")
+            st.write(f"Modular ratio (n = E_tube / E_wksf): {props['n_ratio']:.3f}")
+            st.write(f"Neutral axis depth from top of WKSF: {props['y_ref_wksf'] * 1000:.2f} mm")
+            st.write(f"Transformed second moment of area (I, in WKSF-equivalent units): {props['I_transformed'] * 1e12:.1f} mm⁴")
+        else:
+            st.write("Bonding: unbonded (each layer bends about its own centroid, no shear transfer)")
+            st.write(f"WKSF centroid depth from top of WKSF: {props['y_ref_wksf'] * 1000:.2f} mm")
+            st.write(f"Tube centroid depth from top of WKSF: {props['y_ref_tube'] * 1000:.2f} mm")
         st.write(f"Effective bending stiffness (EI): {EI_total:.1f} N·m²")
         st.write(f"Self-weight distributed load: {w_self:.3f} N/m")
 
