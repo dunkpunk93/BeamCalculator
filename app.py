@@ -764,12 +764,13 @@ def fig_table_stability(table_width_m, footprint_m, load_distance_m, com_x_m, is
 
     top_y, top_th, leg_h, leg_w = 1.0, 0.3, 1.6, 0.18
 
-    fig, ax = plt.subplots(figsize=(7, 3.8))
+    fig, ax = plt.subplots(figsize=(7, 4.2))
     ax.axis("off")
 
     ax.add_patch(plt.Rectangle((0, top_y), tw, top_th, facecolor="#8a8a8a", edgecolor="black", linewidth=1.5))
-    ax.add_patch(plt.Rectangle((left_leg_x - leg_w / 2, top_y - leg_h), leg_w, leg_h, facecolor="#8a8a8a", edgecolor="black", linewidth=1.5))
-    ax.add_patch(plt.Rectangle((right_leg_x - leg_w / 2, top_y - leg_h), leg_w, leg_h, facecolor="#8a8a8a", edgecolor="black", linewidth=1.5))
+    # Legs drawn so their OUTER faces sit exactly on the footprint boundary lines.
+    ax.add_patch(plt.Rectangle((left_leg_x, top_y - leg_h), leg_w, leg_h, facecolor="#8a8a8a", edgecolor="black", linewidth=1.5))
+    ax.add_patch(plt.Rectangle((right_leg_x - leg_w, top_y - leg_h), leg_w, leg_h, facecolor="#8a8a8a", edgecolor="black", linewidth=1.5))
 
     floor_y = top_y - leg_h
     ax.plot([-0.6, tw + 0.6], [floor_y, floor_y], color="black", linewidth=2)
@@ -783,13 +784,16 @@ def fig_table_stability(table_width_m, footprint_m, load_distance_m, com_x_m, is
     ax.plot([right_leg_x, right_leg_x], [floor_y, dim_y], color="black", linewidth=0.6, linestyle=":")
     ax.text((left_leg_x + right_leg_x) / 2, dim_y - 0.25, f"Footprint = {footprint_m * 1000:.0f} mm", ha="center", fontsize=9)
 
-    ax.annotate("", xy=(load_x, top_y + top_th), xytext=(load_x, top_y + top_th + 1.1), arrowprops=dict(arrowstyle="->", linewidth=2, color="black"))
-    ax.text(load_x, top_y + top_th + 1.2, "Point load", ha="center", fontsize=9)
+    # Point load arrow: kept short so it never reaches the dimension line above it.
+    arrow_tail_y = top_y + top_th + 0.8
+    ax.annotate("", xy=(load_x, top_y + top_th), xytext=(load_x, arrow_tail_y), arrowprops=dict(arrowstyle="->", linewidth=2, color="black"))
+    label_y = arrow_tail_y + 0.15
+    ax.text(load_x, label_y, "Point load", ha="center", fontsize=9)
 
-    dim2_y = top_y + top_th + 0.55
+    # Distance dimension drawn well clear of the arrow/label (no connecting extension
+    # lines through them, so nothing overlaps the arrow or its "Point load" text).
+    dim2_y = label_y + 0.35
     ax.annotate("", xy=(0, dim2_y), xytext=(load_x, dim2_y), arrowprops=dict(arrowstyle="<->"))
-    ax.plot([0, 0], [top_y + top_th, dim2_y], color="black", linewidth=0.6, linestyle=":")
-    ax.plot([load_x, load_x], [top_y + top_th, dim2_y], color="black", linewidth=0.6, linestyle=":")
     ax.text(load_x / 2, dim2_y + 0.15, f"{load_distance_m * 1000:.0f} mm", ha="center", fontsize=9)
 
     com_color = "#2e8b57" if is_stable else "#c0392b"
@@ -806,6 +810,8 @@ def render_table_stability_tab():
         "2D tip-over check: does the combined centre of mass of the table and a point load "
         "stay within the footprint of the legs? Legs are assumed centred under the tabletop."
     )
+
+    diagram_slot = st.container()
 
     st.header("1. Table dimensions")
     c1, c2, c3 = st.columns(3)
@@ -830,9 +836,11 @@ def render_table_stability_tab():
     )
     st.caption("Distance is measured from the left edge of the tabletop.")
 
-    st.header("Results")
     if dims_error:
-        st.error(dims_error)
+        with diagram_slot:
+            st.error(dims_error)
+        st.header("Results")
+        st.warning("Fix the input errors above to see results.")
         return
 
     table_width_m = table_width_mm / 1000.0
@@ -841,10 +849,12 @@ def render_table_stability_tab():
 
     result = compute_table_stability(table_width_m, footprint_m, table_mass_kg, load_mass_kg, load_distance_m)
 
-    fig = fig_table_stability(table_width_m, footprint_m, load_distance_m, result["com_x"], result["is_stable"])
-    st.pyplot(fig)
-    plt.close(fig)
+    with diagram_slot:
+        fig = fig_table_stability(table_width_m, footprint_m, load_distance_m, result["com_x"], result["is_stable"])
+        st.pyplot(fig)
+        plt.close(fig)
 
+    st.header("Results")
     margin_mm = result["margin_m"] * 1000
     if result["is_stable"]:
         st.success(f"**Stable**  \nCOM within footprint by {margin_mm:.0f} mm")
