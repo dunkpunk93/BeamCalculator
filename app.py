@@ -49,7 +49,7 @@ BOND_TYPES = {
     "unbonded": "Unbonded (Resting Only)",
 }
 
-st.set_page_config(page_title="Beam Calculator", layout="centered")
+st.set_page_config(page_title="Simple 2D Eng Calculators", layout="centered")
 
 
 # ---------------------------------------------------------------------------
@@ -718,12 +718,155 @@ def render_composite_tab():
 
 
 # ---------------------------------------------------------------------------
+# Tab 3: Table Stability
+# ---------------------------------------------------------------------------
+def compute_table_stability(table_width_m, footprint_m, table_mass_kg, load_mass_kg, load_distance_m):
+    """2D tip-over check. x=0 at the left edge of the tabletop; legs assumed centred
+    under the top, footprint apart. Centre of mass (COM) uses mass directly (gravity
+    cancels out of a pure moment-balance / COM calculation)."""
+    overhang_m = (table_width_m - footprint_m) / 2
+    left_pivot = overhang_m
+    right_pivot = overhang_m + footprint_m
+    table_com_x = table_width_m / 2
+
+    total_mass = table_mass_kg + load_mass_kg
+    if total_mass <= 0:
+        com_x = table_com_x
+    else:
+        com_x = (table_mass_kg * table_com_x + load_mass_kg * load_distance_m) / total_mass
+
+    if com_x < left_pivot:
+        is_stable, margin_m, side = False, left_pivot - com_x, "left"
+    elif com_x > right_pivot:
+        is_stable, margin_m, side = False, com_x - right_pivot, "right"
+    else:
+        is_stable, margin_m, side = True, min(com_x - left_pivot, right_pivot - com_x), None
+
+    return {
+        "com_x": com_x,
+        "left_pivot": left_pivot,
+        "right_pivot": right_pivot,
+        "is_stable": is_stable,
+        "margin_m": margin_m,
+        "side": side,
+    }
+
+
+def fig_table_stability(table_width_m, footprint_m, load_distance_m, com_x_m, is_stable):
+    scale = 10.0 / table_width_m
+    tw = 10.0
+    fp = footprint_m * scale
+    overhang = (tw - fp) / 2
+    left_leg_x = overhang
+    right_leg_x = overhang + fp
+    load_x = load_distance_m * scale
+    com_x = com_x_m * scale
+
+    top_y, top_th, leg_h, leg_w = 1.0, 0.3, 1.6, 0.18
+
+    fig, ax = plt.subplots(figsize=(7, 3.8))
+    ax.axis("off")
+
+    ax.add_patch(plt.Rectangle((0, top_y), tw, top_th, facecolor="#8a8a8a", edgecolor="black", linewidth=1.5))
+    ax.add_patch(plt.Rectangle((left_leg_x - leg_w / 2, top_y - leg_h), leg_w, leg_h, facecolor="#8a8a8a", edgecolor="black", linewidth=1.5))
+    ax.add_patch(plt.Rectangle((right_leg_x - leg_w / 2, top_y - leg_h), leg_w, leg_h, facecolor="#8a8a8a", edgecolor="black", linewidth=1.5))
+
+    floor_y = top_y - leg_h
+    ax.plot([-0.6, tw + 0.6], [floor_y, floor_y], color="black", linewidth=2)
+
+    ax.plot([left_leg_x, left_leg_x], [floor_y, top_y + top_th], color="gray", linewidth=0.8, linestyle="--")
+    ax.plot([right_leg_x, right_leg_x], [floor_y, top_y + top_th], color="gray", linewidth=0.8, linestyle="--")
+
+    dim_y = floor_y - 0.5
+    ax.annotate("", xy=(left_leg_x, dim_y), xytext=(right_leg_x, dim_y), arrowprops=dict(arrowstyle="<->"))
+    ax.plot([left_leg_x, left_leg_x], [floor_y, dim_y], color="black", linewidth=0.6, linestyle=":")
+    ax.plot([right_leg_x, right_leg_x], [floor_y, dim_y], color="black", linewidth=0.6, linestyle=":")
+    ax.text((left_leg_x + right_leg_x) / 2, dim_y - 0.25, f"Footprint = {footprint_m * 1000:.0f} mm", ha="center", fontsize=9)
+
+    ax.annotate("", xy=(load_x, top_y + top_th), xytext=(load_x, top_y + top_th + 1.1), arrowprops=dict(arrowstyle="->", linewidth=2, color="black"))
+    ax.text(load_x, top_y + top_th + 1.2, "Point load", ha="center", fontsize=9)
+
+    dim2_y = top_y + top_th + 0.55
+    ax.annotate("", xy=(0, dim2_y), xytext=(load_x, dim2_y), arrowprops=dict(arrowstyle="<->"))
+    ax.plot([0, 0], [top_y + top_th, dim2_y], color="black", linewidth=0.6, linestyle=":")
+    ax.plot([load_x, load_x], [top_y + top_th, dim2_y], color="black", linewidth=0.6, linestyle=":")
+    ax.text(load_x / 2, dim2_y + 0.15, f"{load_distance_m * 1000:.0f} mm", ha="center", fontsize=9)
+
+    com_color = "#2e8b57" if is_stable else "#c0392b"
+    ax.plot([com_x], [top_y + top_th / 2], marker="o", markersize=10, color=com_color, zorder=5, markeredgecolor="black")
+    ax.text(com_x, top_y - 0.35, "COM", ha="center", fontsize=9, color=com_color, fontweight="bold")
+
+    ax.set_xlim(-1.0, tw + 1.0)
+    ax.set_ylim(dim_y - 0.6, dim2_y + 0.6)
+    return fig
+
+
+def render_table_stability_tab():
+    st.caption(
+        "2D tip-over check: does the combined centre of mass of the table and a point load "
+        "stay within the footprint of the legs? Legs are assumed centred under the tabletop."
+    )
+
+    st.header("1. Table dimensions")
+    c1, c2, c3 = st.columns(3)
+    table_width_mm = c1.number_input("Table width", min_value=1.0, value=1200.0, step=10.0, key="t3_table_width")
+    footprint_mm = c2.number_input("Footprint", min_value=1.0, value=700.0, step=10.0, key="t3_footprint")
+    table_mass_kg = c3.number_input("Table mass (kg)", min_value=0.0, value=15.0, step=1.0, key="t3_table_mass")
+
+    dims_error = None
+    if footprint_mm > table_width_mm:
+        dims_error = "Footprint can't be wider than the table width."
+
+    st.header("2. Point load")
+    c1, c2 = st.columns(2)
+    load_mass_kg = c1.number_input("Point load (kg)", min_value=0.0, value=20.0, step=1.0, key="t3_load_mass")
+    load_distance_mm = c2.number_input(
+        "Distance from edge of table (mm)",
+        min_value=0.0,
+        max_value=table_width_mm,
+        value=min(100.0, table_width_mm),
+        step=10.0,
+        key="t3_load_distance",
+    )
+    st.caption("Distance is measured from the left edge of the tabletop.")
+
+    st.header("Results")
+    if dims_error:
+        st.error(dims_error)
+        return
+
+    table_width_m = table_width_mm / 1000.0
+    footprint_m = footprint_mm / 1000.0
+    load_distance_m = load_distance_mm / 1000.0
+
+    result = compute_table_stability(table_width_m, footprint_m, table_mass_kg, load_mass_kg, load_distance_m)
+
+    fig = fig_table_stability(table_width_m, footprint_m, load_distance_m, result["com_x"], result["is_stable"])
+    st.pyplot(fig)
+    plt.close(fig)
+
+    margin_mm = result["margin_m"] * 1000
+    if result["is_stable"]:
+        st.success(f"**Stable**  \nCOM within footprint by {margin_mm:.0f} mm")
+    else:
+        st.error(f"**Instable**  \nCOM outside footprint by {margin_mm:.0f} mm")
+
+    with st.expander("Details"):
+        st.write(f"Combined COM position from left edge: {result['com_x'] * 1000:.1f} mm")
+        st.write(f"Footprint spans {result['left_pivot'] * 1000:.1f} mm to {result['right_pivot'] * 1000:.1f} mm from left edge")
+        if not result["is_stable"]:
+            st.write(f"Table tips about the {result['side']} leg")
+
+
+# ---------------------------------------------------------------------------
 # App entry point
 # ---------------------------------------------------------------------------
-st.title("Beam Calculator")
+st.title("Simple 2D Eng Calculators")
 
-tab1, tab2 = st.tabs(["Simple Tube Bending", "Composite WKSF & Tube Bending"])
+tab1, tab2, tab3 = st.tabs(["Simple Tube Bending", "Composite WKSF & Tube Bending", "Table Stability"])
 with tab1:
     render_simple_tube_tab()
 with tab2:
     render_composite_tab()
+with tab3:
+    render_table_stability_tab()
