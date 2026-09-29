@@ -179,6 +179,31 @@ LOAD_FIGS = {
 }
 
 
+def fig_two_point_load():
+    fig, ax = plt.subplots(figsize=(2.6, 1.3))
+    ax.axis("off")
+    ax.plot([0, 4], [1, 1], color="black", linewidth=3)
+    for x_pos, label in ((1.3, "P1"), (2.7, "P2")):
+        ax.annotate("", xy=(x_pos, 1.02), xytext=(x_pos, 1.9), arrowprops=dict(arrowstyle="->", linewidth=2.2))
+        ax.text(x_pos, 1.95, label, ha="center", fontsize=11)
+    ax.set_xlim(-0.4, 4.4)
+    ax.set_ylim(0.5, 2.2)
+    return fig
+
+
+COMPOSITE_LOAD_TYPES = {
+    "udl": "Evenly Distributed Load",
+    "point": "Point Load",
+    "two_point": "Two Point Loads",
+}
+
+COMPOSITE_LOAD_FIGS = {
+    "udl": fig_udl,
+    "point": fig_point_load,
+    "two_point": fig_two_point_load,
+}
+
+
 def fig_one_tube():
     fig, ax = _new_icon_ax(figsize=(1.9, 1.9))
     ax.add_patch(plt.Rectangle((-1.1, 0.35), 2.2, 0.22, facecolor="#8a8a8a", edgecolor="black", linewidth=1.5))
@@ -379,41 +404,63 @@ def clamp_point_load_distance(a_m, length_m):
     return a_m
 
 
-def render_load_type_and_get_x_grid(state_prefix, length_m):
-    """Renders load-type selector + inputs. Returns (load_type, total_udl_n, point_load_n, point_a_m, calc_point_a_m)."""
-    render_choice_row(list(LOAD_TYPES.keys()), f"{state_prefix}_load_type", LOAD_FIGS, LOAD_TYPES)
+def _render_single_point_load_inputs(state_prefix, length_m, suffix="", label_suffix="", default_a_m=None):
+    """Renders one (load, distance) pair of inputs. Returns {"P": .., "a": .., "calc_a": ..}."""
+    magnitude_key = f"{state_prefix}_load_magnitude_n{suffix}"
+    dist_key = f"{state_prefix}_point_a_m{suffix}"
+
+    # Clamp any previously-stored distance if the beam length has since shrunk.
+    if dist_key in st.session_state and st.session_state[dist_key] > length_m:
+        st.session_state[dist_key] = length_m
+
+    if default_a_m is None:
+        default_a_m = length_m / 2
+
+    c1, c2 = st.columns(2)
+    P = c1.number_input(f"Point load{label_suffix} (N)", min_value=0.0, value=500.0, step=10.0, key=magnitude_key)
+    a = c2.number_input(
+        "Distance from left support (m)",
+        min_value=0.0,
+        max_value=length_m,
+        value=min(default_a_m, length_m),
+        step=0.05,
+        key=dist_key,
+    )
+    return {"P": P, "a": a, "calc_a": clamp_point_load_distance(a, length_m)}
+
+
+def render_load_type_and_get_x_grid(state_prefix, length_m, load_types=None, load_figs=None):
+    """Renders load-type selector + inputs. Returns (load_type, total_udl_n, point_loads).
+
+    point_loads is a list of {"P": .., "a": .., "calc_a": ..} dicts - empty for "udl",
+    one entry for "point", two for "two_point".
+    """
+    load_types = load_types or LOAD_TYPES
+    load_figs = load_figs or LOAD_FIGS
+
+    render_choice_row(list(load_types.keys()), f"{state_prefix}_load_type", load_figs, load_types)
     load_type = st.session_state[f"{state_prefix}_load_type"]
 
-    magnitude_key = f"{state_prefix}_load_magnitude_n"
-    dist_key = f"{state_prefix}_point_a_m"
+    total_udl_n = None
+    point_loads = []
 
     if load_type == "udl":
         total_udl_n = st.number_input(
-            "Total distributed load (N)", min_value=0.0, value=500.0, step=10.0, key=magnitude_key
+            "Total distributed load (N)", min_value=0.0, value=500.0, step=10.0, key=f"{state_prefix}_load_magnitude_n"
         )
-        point_load_n = None
-        point_a_m = None
-        calc_point_a_m = None
-    else:
-        # Clamp any previously-stored distance if the beam length has since shrunk.
-        if dist_key in st.session_state and st.session_state[dist_key] > length_m:
-            st.session_state[dist_key] = length_m
-        c1, c2 = st.columns(2)
-        point_load_n = c1.number_input(
-            "Point load (N)", min_value=0.0, value=500.0, step=10.0, key=magnitude_key
+    elif load_type == "point":
+        point_loads.append(_render_single_point_load_inputs(state_prefix, length_m))
+    elif load_type == "two_point":
+        st.markdown("**Point load 1**")
+        point_loads.append(
+            _render_single_point_load_inputs(state_prefix, length_m, suffix="_1", label_suffix=" 1", default_a_m=length_m / 3)
         )
-        point_a_m = c2.number_input(
-            "Distance from left support (m)",
-            min_value=0.0,
-            max_value=length_m,
-            value=min(length_m / 2, length_m),
-            step=0.05,
-            key=dist_key,
+        st.markdown("**Point load 2**")
+        point_loads.append(
+            _render_single_point_load_inputs(state_prefix, length_m, suffix="_2", label_suffix=" 2", default_a_m=2 * length_m / 3)
         )
-        total_udl_n = None
-        calc_point_a_m = clamp_point_load_distance(point_a_m, length_m)
 
-    return load_type, total_udl_n, point_load_n, point_a_m, calc_point_a_m
+    return load_type, total_udl_n, point_loads
 
 
 def deflection_plot(x, y):
@@ -476,9 +523,7 @@ def render_simple_tube_tab():
     length_m = st.number_input("Beam length (m)", min_value=0.01, value=1.0, step=0.1, key="t1_length")
 
     st.header("3. Load type")
-    load_type, total_udl_n, point_load_n, point_a_m, calc_point_a_m = render_load_type_and_get_x_grid(
-        "t1", length_m
-    )
+    load_type, total_udl_n, point_loads = render_load_type_and_get_x_grid("t1", length_m)
 
     st.header("4. Material")
     e_gpa, density = material_selector(TUBE_MATERIALS, "t1")
@@ -505,8 +550,9 @@ def render_simple_tube_tab():
     else:
         y = udl_deflection(support_type, w_self, x, length_m, EI)
         m = udl_moment(support_type, w_self, x, length_m)
-        y = y + point_deflection(support_type, point_load_n, calc_point_a_m, x, length_m, EI)
-        m = m + point_moment(support_type, point_load_n, calc_point_a_m, x, length_m)
+        for pl in point_loads:
+            y = y + point_deflection(support_type, pl["P"], pl["calc_a"], x, length_m, EI)
+            m = m + point_moment(support_type, pl["P"], pl["calc_a"], x, length_m)
 
     max_deflection_m = float(np.max(np.abs(y)))
     max_moment_nm = float(np.max(np.abs(m)))
@@ -636,8 +682,8 @@ def render_composite_tab():
     length_m = st.number_input("WKSF length (m)", min_value=0.01, value=1.2, step=0.1, key="t2_length")
 
     st.header("5. Load type")
-    load_type, total_udl_n, point_load_n, point_a_m, calc_point_a_m = render_load_type_and_get_x_grid(
-        "t2", length_m
+    load_type, total_udl_n, point_loads = render_load_type_and_get_x_grid(
+        "t2", length_m, load_types=COMPOSITE_LOAD_TYPES, load_figs=COMPOSITE_LOAD_FIGS
     )
 
     st.header("6. Material")
@@ -675,8 +721,9 @@ def render_composite_tab():
     else:
         y = udl_deflection(support_type, w_self, x, length_m, EI_total)
         m = udl_moment(support_type, w_self, x, length_m)
-        y = y + point_deflection(support_type, point_load_n, calc_point_a_m, x, length_m, EI_total)
-        m = m + point_moment(support_type, point_load_n, calc_point_a_m, x, length_m)
+        for pl in point_loads:
+            y = y + point_deflection(support_type, pl["P"], pl["calc_a"], x, length_m, EI_total)
+            m = m + point_moment(support_type, pl["P"], pl["calc_a"], x, length_m)
 
     max_deflection_m = float(np.max(np.abs(y)))
     max_moment_nm = float(np.max(np.abs(m)))
